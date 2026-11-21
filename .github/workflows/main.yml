@@ -1,0 +1,73 @@
+name: Build Windows EXE
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pyinstaller pillow
+
+      - name: Download ffmpeg
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_tmp
+          Copy-Item (Get-ChildItem ffmpeg_tmp -Recurse -Filter ffmpeg.exe | Select-Object -First 1).FullName ffmpeg.exe
+          Copy-Item (Get-ChildItem ffmpeg_tmp -Recurse -Filter ffprobe.exe | Select-Object -First 1).FullName ffprobe.exe
+
+      - name: Make icon
+        continue-on-error: true
+        run: |
+          python -c "
+          from PIL import Image
+          im = Image.open('app/static/favicon.png').convert('RGBA')
+          s = max(im.size)
+          sq = Image.new('RGBA', (s, s), (0, 0, 0, 0))
+          sq.paste(im, ((s - im.width) // 2, (s - im.height) // 2))
+          sq.save('icon.ico', sizes=[(256, 256), (64, 64), (32, 32)])
+          "
+
+      - name: Build EXE
+        run: |
+          ICON=""
+          if [ -f icon.ico ]; then ICON="--icon icon.ico"; fi
+          pyinstaller launcher.py --noconfirm --clean --onedir --console \
+            --name DarkAudioChanger $ICON \
+            --add-data "app/static;app/static" --add-data "VERSION;." \
+            --add-binary "ffmpeg.exe;." --add-binary "ffprobe.exe;." \
+            --collect-all faster_whisper --collect-all ctranslate2 \
+            --collect-all av --collect-all onnxruntime --collect-all tokenizers \
+            --collect-all librosa --collect-all soundfile --collect-all numba \
+            --collect-all edge_tts --collect-all deep_translator --collect-all anthropic \
+            --hidden-import python_multipart --hidden-import multipart \
+            --exclude-module tkinter --exclude-module matplotlib
+
+      - name: Zip
+        run: |
+          if [ -f .env.example ]; then cp .env.example dist/DarkAudioChanger/.env.example; fi
+          cd dist
+          7z a ../DarkAudioChanger-windows-v$(cat ../VERSION).zip DarkAudioChanger
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DarkAudioChanger-windows
+          path: DarkAudioChanger-windows-*.zip
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: DarkAudioChanger-windows-*.zip
